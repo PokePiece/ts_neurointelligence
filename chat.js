@@ -1,85 +1,99 @@
 // chat.js
-import { AutoTokenizer, AutoModelForCausalLM } from '@xenova/transformers';
+import ort from 'onnxruntime-node';
 import * as readline from 'readline/promises';
-import 'dotenv/config';
-import * as process from 'process';
+import fs from 'fs';
+import { Tokenizer } from "tokenizers"; // Raw tokenizers package
 
-// Get Hugging Face token from environment variables for security.
-const HF_TOKEN = process.env.HUGGING_FACE_TOKEN;
 
-// Throw an error if the token is not found, as it's required for some models.
-if (!HF_TOKEN) {
-    console.error("Hugging Face token not found. Please set HUGGING_FACE_TOKEN in your .env file.");
-    process.exit(1);
-}
 
-// Define the model name to be used.
-const model_name = "xenova/pythia-410m";
+//change to my huggingface model
+const modelPath = './exported_model/model.onnx';
 
-let tokenizer;
-let model;
+let session;
 
 /**
- * Initializes and loads the tokenizer and the language model.
- * The '@xenova/transformers' library automatically handles memory optimization,
- * similar to Python's bfloat16, by using a quantized model by default.
+ * Load the ONNX model from local disk
  */
 async function loadModel() {
     try {
-        console.log("Loading model to save memory...");
-        tokenizer = await AutoTokenizer.from_pretrained(model_name);
-        model = await AutoModelForCausalLM.from_pretrained(model_name, {
-            // This is the default behavior to save memory.
-            quantized: true
-        });
+        console.log("Loading ONNX model...");
+        session = await ort.InferenceSession.create(modelPath);
         console.log("Model loaded successfully.");
     } catch (e) {
-        console.error(`An error occurred during model loading: ${e}`);
+        console.error("Error loading model:", e);
         process.exit(1);
     }
 }
 
-/**
- * Interface for the user profile to define the assistant's tone and style.
- * @typedef {Object} Profile
- * @property {string} tone - The tone of the assistant (e.g., "realistic").
- * @property {string} style - The style of the assistant (e.g., "technical").
- */
+let tokenizer;
 
-/**
- * Generates a response from the model based on a user prompt and profile.
- * @param {string} prompt The user's input.
- * @param {Profile} profile The profile to set the assistant's tone and style.
- * @returns {Promise<string>} The generated response from the AI.
- */
-async function generate(prompt, profile) {
-    const system_prompt = `You're a ${profile.tone} assistant. Be ${profile.style}.`;
-    const full_prompt = system_prompt + "\nUser: " + prompt + "\nAI:";
+import path from 'path';
 
-    // Tokenize the full prompt.
-    // Fixed:
-    const inputs = await tokenizer(full_prompt);
-    const outputs = await model.generate(inputs.input_ids, {
-        max_new_tokens: 500,
-        do_sample: true,
-        top_p: 0.9,
-        temperature: 0.2,
-        repetition_penalty: 1.2,
-    });
+// ...
 
-
-    // Decode the generated tokens to a readable string.
-    const generated_tokens = outputs[0].slice(inputs.input_ids.size[1]);
-    return tokenizer.decode(generated_tokens, { skip_special_tokens: true });
+async function loadTokenizer() {
+  tokenizer = await Tokenizer.fromFile(
+    path.resolve("./exported_model/tokenizer.json")
+  );
 }
 
+
+
+
 /**
- * Main function to handle the interactive chat loop.
+ * Run a single inference (stub logic – needs tokenizer and proper input formatting)
+ */
+async function generate(prompt) {
+    const encoded = await tokenizer.encode(prompt);
+    const tokens = encoded.ids;
+    const attention = new Array(tokens.length).fill(1);
+    const position = tokens.map((_, i) => i);
+
+    const inputTensor = new ort.Tensor('int64', BigInt64Array.from(tokens.map(BigInt)), [1, tokens.length]);
+    const maskTensor = new ort.Tensor('int64', BigInt64Array.from(attention.map(BigInt)), [1, tokens.length]);
+    const positionTensor = new ort.Tensor('int64', BigInt64Array.from(position.map(BigInt)), [1, tokens.length]);
+
+    const feeds = {
+        input_ids: inputTensor,
+        attention_mask: maskTensor,
+        position_ids: positionTensor,
+    };
+
+    const results = await session.run(feeds);
+    const output = results.logits;
+
+    // Step 1: Get logits for last token
+    const vocabSize = output.dims[2]; // 50304 for Pythia
+    const lastLogits = output.data.slice(-vocabSize);
+
+    // Step 2: Greedy decoding — find max index
+    let max = -Infinity;
+    let maxIndex = -1;
+    for (let i = 0; i < lastLogits.length; i++) {
+        if (lastLogits[i] > max) {
+            max = lastLogits[i];
+            maxIndex = i;
+        }
+    }
+
+    // Step 3: Decode token
+    const decoded = await tokenizer.decode([maxIndex], { skipSpecialTokens: true });
+    return decoded;
+}
+
+
+
+
+
+/**
+ * Start the REPL loop
  */
 async function main() {
     await loadModel();
+    await loadTokenizer();
 
-    console.log("Welcome to the interactive AI assistant. Type 'quit' to exit.");
+
+    console.log("Welcome to the ONNX assistant. Type 'quit' to exit.");
 
     const rl = readline.createInterface({
         input: process.stdin,
@@ -94,11 +108,9 @@ async function main() {
             break;
         }
 
-        const profile = { "tone": "realistic", "style": "technical" };
-        const response = await generate(prompt, profile);
+        const response = await generate(prompt);
         console.log("AI:", response);
     }
 }
 
-// Start the application.
 main();

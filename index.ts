@@ -3,14 +3,14 @@ import { ChromaClient, Settings } from 'chromadb/dist/main.js';
 import { SentenceTransformer } from '@xenova/transformers';
 import * as readline from 'readline/promises';
 import { promises as fs } from 'fs';
-import * as process from 'process';
+//import * as process from 'process';
 import 'dotenv/config';
 
 const HF_TOKEN = process.env.HUGGING_FACE_TOKEN;
 
 if (!HF_TOKEN) {
     console.error("Hugging Face token not found. Please set HUGGING_FACE_TOKEN in your .env file.");
-    process.exit(1);
+    process.env.exit(1);
 }
 
 // NOTE: This is a placeholder for a Python-only library
